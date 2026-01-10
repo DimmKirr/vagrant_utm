@@ -128,9 +128,8 @@ module VagrantPlugins
       def finalize!
         # By default, we check for guest additions (qemu-ga)
         @check_guest_additions = true if @check_guest_additions == UNSET_VALUE
-        # Always set the directory share mode to 'virtFS'
-        # default share folder implementation in utm plugin
-        self.directory_share_mode = "virtFS"
+        # Don't auto-set directory_share_mode - it breaks Apple Virtualization VMs
+        # Users can explicitly set utm.directory_share_mode if needed for QEMU VMs
         # By default, we assume the VM supports virtio 9p filesystems
         @functional_9pfs = true if @functional_9pfs == UNSET_VALUE
         # The default name is just nothing, and we default it

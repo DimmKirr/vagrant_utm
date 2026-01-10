@@ -1,26 +1,26 @@
 ---
 -- add_directory_share.applescript
--- This script adds QEMU arguments for directory sharing in UTM (QEMU) for given id and directory pairs.
--- Usage: osascript add_directory_share.applescript UUID --id <ID1> --dir <DIR1> --id <ID2> --dir <DIR2> ...
--- Example: osascript add_directory_share.applescript UUID --id no1 --dir "/path/to/dir1" --id no2 --dir "/path/to/dir2"
+-- This script adds directory sharing in UTM for both QEMU (9pfs) and Apple Virtualization (VirtioFS).
+-- Backend is auto-detected from VM properties.
+-- Usage: osascript add_directory_share.applescript UUID --id <ID> --dir <DIR> [--id <ID2> --dir <DIR2> ...]
+-- Example: osascript add_directory_share.applescript UUID --id vagrant --dir "/path/to/dir"
+-- Note: For Apple Virtualization, dirs auto-mount at /Volumes/My Shared Files/
 
--- Function to create QEMU arguments for directory sharing
+-- Function to create QEMU arguments for directory sharing (9pfs)
 on createQemuArgsForDir(dirId, dirPath)
-
     -- Prepare the QEMU argument strings
-    set fsdevArgStr to "-fsdev local,id=" & dirId & ",path=" & dirPath & ",security_model=mapped-xattr" 
+    set fsdevArgStr to "-fsdev local,id=" & dirId & ",path=" & dirPath & ",security_model=mapped-xattr"
     set deviceArgStr to "-device virtio-9p-pci,fsdev=" & dirId & ",mount_tag=" & dirId
-
     return {fsdevArgStr, deviceArgStr}
 end createQemuArgsForDir
 
 -- Main script
 on run argv
     -- VM id is assumed to be the first argument
-    set vmId to item 1 of argv 
+    set vmId to item 1 of argv
 
     -- Initialize variables
-    set idList to {} -- 
+    set idList to {}
     set dirList to {}
     set idFlag to false
     set dirFlag to false
@@ -43,54 +43,59 @@ on run argv
         end if
     end repeat
 
-    -- Ensure the lists are of the same length
-    if (count of idList) is not (count of dirList) then
-        error "The number of IDs and directories must be the same."
-    end if
-
-    -- Initialize the list of QEMU arguments
-    set qemuNewArgs to {}
-
-    -- Initialize the directory list
+    -- Initialize the directory list (used for registry update - both backends)
     set directoryList to {}
-
-    -- Create QEMU arguments for each directory
     repeat with i from 1 to (count of dirList)
         set dirPath to item i of dirList
-        set dirId to item i of idList
         set dirURL to POSIX file dirPath
-        set {fsdevArgStr, deviceArgStr} to createQemuArgsForDir(dirId, dirPath)
-
-        -- add the directory file obj to the list
         set end of directoryList to dirURL
-        -- append the arguments to the list
-        set end of qemuNewArgs to {fsdevArg:fsdevArgStr, deviceArg:deviceArgStr, dirURL:dirURL}
     end repeat
 
-    -- Example usage in UTM
-    tell application  "UTM"
+    tell application "UTM"
         set vm to virtual machine id vmId
-        set config to configuration of vm
 
-        -- Get the current QEMU additional arguments
-        set qemuAddArgs to qemu additional arguments of config
+        -- Read backend type from VM (qemu or apple)
+        set vmBackend to backend of vm
 
-        -- Add the new arguments to the existing ones
-        repeat with arg in qemuNewArgs
-        -- SKIP: adding file urls to qemu args file urls , since it is not necessary. UTM#6977
-            set end of qemuAddArgs to {argument string:fsdevArg of arg}
-            set end of qemuAddArgs to {argument string:deviceArg of arg}
+        if vmBackend is qemu then
+            -- QEMU backend: add 9pfs arguments to config
+            set config to configuration of vm
+            set qemuAddArgs to qemu additional arguments of config
+
+            repeat with i from 1 to (count of dirList)
+                set dirPath to item i of dirList
+                set dirId to item i of idList
+                set {fsdevArgStr, deviceArgStr} to my createQemuArgsForDir(dirId, dirPath)
+                set end of qemuAddArgs to {argument string:fsdevArgStr}
+                set end of qemuAddArgs to {argument string:deviceArgStr}
+            end repeat
+
+            set qemu additional arguments of config to qemuAddArgs
+            update configuration of vm with config
+        end if
+        -- For Apple Virtualization, no config changes needed - registry update handles VirtioFS
+
+        -- Get current registry paths (to avoid overwriting valid sandbox bookmarks)
+        set reg to registry of vm
+        set existingPaths to {}
+        repeat with r in reg
+            set end of existingPaths to (POSIX path of r)
         end repeat
 
-        -- Update the configuration with the new arguments list
-        set qemu additional arguments of config to qemuAddArgs
-        update configuration of vm with config
+        -- Only add directories that are not already in the registry
+        set newDirs to {}
+        repeat with i from 1 to (count of directoryList)
+            set dirURL to item i of directoryList
+            set dirPosixPath to POSIX path of dirURL
+            if existingPaths does not contain dirPosixPath then
+                set end of newDirs to dirURL
+            end if
+        end repeat
 
-        -- Get the current directory shares in registry
-        set reg to registry of vm
-        -- Add new directory shares to the registry
-        set reg to reg & directoryList
-        -- Update registry of vm with new directory shares
-        update registry of vm with reg
+        -- Update registry only if there are new directories to add
+        if (count of newDirs) > 0 then
+            set reg to reg & newDirs
+            update registry of vm with reg
+        end if
     end tell
 end run

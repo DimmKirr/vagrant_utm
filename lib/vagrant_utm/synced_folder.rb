@@ -11,19 +11,47 @@ module VagrantPlugins
         # This only happens with `vagrant package --base`. Sigh.
         return true unless machine.provider_config
 
-        machine.provider_config.functional_9pfs
+        # For QEMU VMs, require functional 9pfs
+        # For Apple Virtualization VMs, always usable (uses VirtioFS)
+        true
       end
 
       # This is called before VM Boot to prepare the synced folders.
       # Add required configs to the VM.
       def prepare(machine, folders, _opts)
-        share_folders(machine, folders)
+        # Skip if no folders to share
+        return if folders.empty?
+
+        # For Apple Virtualization VMs, skip automated setup - it doesn't work
+        # because macOS security-scoped bookmarks cannot be created programmatically.
+        # The PromptVirtioFS action will prompt user to add folders via UTM GUI.
+        return if apple_vm?(machine)
+
+        # For QEMU VMs, configure 9pfs sharing
+        begin
+          share_folders(machine, folders)
+        rescue StandardError => e
+          machine.ui.warn("Could not configure shared folders: #{e.message}")
+        end
       end
 
       # This is called after VM Boot to mount the synced folders.
       # Mount the shared folders inside the VM.
       def enable(machine, folders, _opts) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength,Metrics/PerceivedComplexity
+        # For Apple Virtualization, VirtioFS auto-mounts at /Volumes/My Shared Files/
+        # User configures shared folders manually via UTM GUI (prompted before boot)
+        if apple_vm?(machine)
+          machine.ui.info("VirtioFS shared folders auto-mount at /Volumes/My Shared Files/")
+          return
+        end
+
+        # For QEMU VMs, configure and mount via 9pfs
         share_folders(machine, folders)
+
+        # Check if guest supports mounting
+        unless machine.guest.capability?(:mount_virtualbox_shared_folder)
+          return
+        end
 
         # sort guestpaths first, so we don't step on ourselves
         folders = folders.sort_by do |_id, data|
@@ -101,6 +129,20 @@ module VagrantPlugins
 
       def os_friendly_id(id)
         id.gsub(%r{[\s/\\]}, "_").sub(/^_/, "")
+      end
+
+      # Check if this is an Apple Virtualization VM
+      def apple_vm?(machine)
+        return false unless machine.id
+
+        # Use osascript to check backend type
+        script_path = File.expand_path("scripts/read_shared_folders.js", __dir__)
+        cmd = "osascript -l JavaScript '#{script_path}' '#{machine.id}' 2>/dev/null"
+        output = `#{cmd}`
+        result = JSON.parse(output) rescue nil
+        result && result["backend"] == "apple"
+      rescue StandardError
+        false
       end
 
       # share_folders sets up the shared folder definitions on the
