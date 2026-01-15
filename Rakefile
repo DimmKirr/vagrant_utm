@@ -24,7 +24,17 @@ task install_plugin: :build_gem do
 end
 
 namespace :test do
-  desc "Run macOS acceptance tests (requires macOS + UTM + macOS box)"
+  desc "Run unit tests"
+  task :unit do
+    sh "bundle exec rspec spec/"
+  end
+
+  desc "Run acceptance tests (requires macOS + UTM + macOS box)"
+  task :acceptance do
+    sh "bundle exec rspec test/acceptance/"
+  end
+
+  desc "Run macOS acceptance tests (shell script)"
   task :macos do
     sh "test/acceptance/macos/run.sh"
   end
